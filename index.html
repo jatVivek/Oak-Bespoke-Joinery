@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' http://localhost:3001;" />
   <title>Oak &amp; Mortise Bespoke Joinery | Handcrafted Fitted Furniture UK</title>
   <meta name="description" content="Bespoke fitted wardrobes, acoustic oak media walls, alcove cabinetry and architectural joinery crafted in our workshop and scribed millimetre-tight to your home." />
 
@@ -649,7 +650,7 @@
             <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
           </div>
           <h4 class="font-serif text-2xl font-bold text-brand-dark">Enter Workshop PIN</h4>
-          <p class="text-xs text-black/60 mt-1">Manage UK quote leads &amp; customize brand settings (Demo PIN: <span class="font-mono font-bold text-brand-dark">2468</span>)</p>
+          <p class="text-xs text-black/60 mt-1">Manage UK quote leads &amp; customize brand settings</p>
         </div>
 
         <!-- PIN Dots Display -->
@@ -659,7 +660,7 @@
           <span class="w-3.5 h-3.5 rounded-full border-2 border-brand-dark"></span>
           <span class="w-3.5 h-3.5 rounded-full border-2 border-brand-dark"></span>
         </div>
-        <div id="pin-error" class="text-xs font-semibold text-red-600 hidden">Incorrect PIN. Try 2468.</div>
+        <div id="pin-error" class="text-xs font-semibold text-red-600 hidden">Incorrect PIN.</div>
 
         <!-- Numeric Keypad -->
         <div class="grid grid-cols-3 gap-2.5 max-w-[240px] mx-auto">
@@ -707,7 +708,7 @@
         <!-- TAB B: QUICK-BRAND CUSTOMIZER (CLONE MODE) -->
         <div id="owner-tab-cloner" class="hidden p-5 sm:p-6 max-h-[70vh] overflow-y-auto space-y-5">
           <div class="bg-[#F3EFE8] border border-black/10 rounded-xl p-3.5 text-xs text-black/75">
-            <strong>60-Second White-Label Cloner:</strong> Customise the company name, monogram or logo URL, WhatsApp number, service area, accent colour, and story below. Changes apply live and persist in <code class="font-mono">localStorage</code>.
+            <strong>60-Second White-Label Cloner:</strong> Customise the company name, monogram or logo URL, WhatsApp number, service area, accent colour, and story below. Changes apply live and are saved to the backend.
           </div>
 
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -808,7 +809,7 @@
      * =========================================================================
      * 1. CENTRALIZED CLONE-READY BRAND CONFIGURATION (DEFAULT_BRAND_CONFIG)
      * Clone this site for any UK Carpenter/Joiner in 60 seconds by editing here
-     * or using the PIN-protected Owner Desk (PIN: 2468).
+     * or using the PIN-protected Owner Desk.
      * =========================================================================
      */
     const DEFAULT_BRAND_CONFIG = {
@@ -866,13 +867,34 @@
       ]
     };
 
-    const STORAGE_KEYS = {
-      BRAND: "om_brand_config_v1",
-      ENQUIRIES: "om_enquiries_v1"
-    };
+    const API_BASE = "http://localhost:3001";
 
-    const OWNER_PIN = "2468";
-    let activeBrand = loadBrandConfig();
+    // Helper: get stored JWT
+    function getAuthToken() {
+      return sessionStorage.getItem("om_owner_token");
+    }
+
+    // Helper: build auth headers
+    function authHeaders() {
+      const token = getAuthToken();
+      return token ? { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
+    }
+
+    // Helper: handle 401 on owner endpoints
+    function handleUnauthorized() {
+      sessionStorage.removeItem("om_owner_token");
+      ownerUnlocked = false;
+      enteredPin = "";
+      updatePinDots();
+      document.getElementById("owner-pin-screen").classList.remove("hidden");
+      document.getElementById("owner-dashboard").classList.add("hidden");
+      showToast("Session expired — please re-enter PIN");
+    }
+
+    let ownerUnlocked = false;
+    let enteredPin = "";
+
+    let activeBrand = { ...DEFAULT_BRAND_CONFIG };
 
     /**
      * =========================================================================
@@ -1174,14 +1196,15 @@
      * 4. BRAND CONFIG LOADER, CSS VARIABLE SYNC & DYNAMIC RENDERING
      * =========================================================================
      */
-    function loadBrandConfig() {
+    async function loadBrandConfig() {
       try {
-        const saved = localStorage.getItem(STORAGE_KEYS.BRAND);
-        if (saved) {
-          return { ...DEFAULT_BRAND_CONFIG, ...JSON.parse(saved) };
+        const resp = await fetch(`${API_BASE}/api/brand`);
+        if (resp.ok) {
+          const data = await resp.json();
+          return { ...DEFAULT_BRAND_CONFIG, ...data };
         }
       } catch (e) {
-        console.warn("Could not read brand config from localStorage:", e);
+        console.warn("Could not reach server — check your connection");
       }
       return { ...DEFAULT_BRAND_CONFIG };
     }
@@ -1197,7 +1220,13 @@
     function buildLogoHTML(brand, size = "md") {
       const dim = size === "sm" ? "w-9 h-9 text-sm" : "w-11 h-11 text-base";
       if (brand.logoType === "image" && brand.logoUrl && brand.logoUrl.trim() !== "") {
-        return `<img src="${escapeHTML(brand.logoUrl.trim())}" alt="${escapeHTML(brand.companyName)}" onerror="this.style.display='none'" class="${dim} rounded-xl object-cover border border-black/15 bg-white" />`;
+        const rawUrl = brand.logoUrl.trim();
+        // URL allowlist: only http://, https://, or data:image/* — reject everything else (e.g. javascript:)
+        const isAllowed = /^https?:\/\//i.test(rawUrl) || /^data:image\//i.test(rawUrl);
+        if (isAllowed) {
+          return `<img src="${escapeHTML(rawUrl)}" alt="${escapeHTML(brand.companyName)}" onerror="this.style.display='none'" class="${dim} rounded-xl object-cover border border-black/15 bg-white" />`;
+        }
+        // Fall through to monogram if URL not allowed
       }
       const initials = (brand.monogram || "OM").slice(0, 3).toUpperCase();
       return `
@@ -1502,11 +1531,13 @@
 
     function updateQuoteState() {
       const est = calculateEstimate();
-      const nameVal = (document.getElementById("qb-name").value || "").trim();
+      const rawName = (document.getElementById("qb-name").value || "").trim();
+      const nameVal = stripHTMLTags(rawName).slice(0, 100);
       const postcodeVal = (document.getElementById("qb-postcode").value || "").trim().toUpperCase();
       const propertyVal = document.getElementById("qb-property").value;
       const surveyVal = document.getElementById("qb-survey").value;
-      const notesVal = (document.getElementById("qb-notes").value || "").trim();
+      const rawNotes = (document.getElementById("qb-notes").value || "").trim();
+      const notesVal = stripHTMLTags(rawNotes).slice(0, 500);
 
       document.getElementById("slip-ref-id").textContent = `#${quoteState.refId}`;
       document.getElementById("slip-price-range").textContent = est.formattedRange;
@@ -1557,13 +1588,17 @@
       return lines.join("\n");
     }
 
-    function persistCurrentEnquiry() {
+    async function persistCurrentEnquiry() {
       const est = calculateEstimate();
-      const nameVal = (document.getElementById("qb-name").value || "").trim() || "Website Enquirer";
-      const postcodeVal = (document.getElementById("qb-postcode").value || "").trim().toUpperCase() || "UK Postcode";
+      // Input sanitization
+      const rawName = (document.getElementById("qb-name").value || "").trim();
+      const nameVal = stripHTMLTags(rawName).slice(0, 100) || "Website Enquirer";
+      const rawPostcode = (document.getElementById("qb-postcode").value || "").trim().toUpperCase();
+      const postcodeVal = rawPostcode || "UK Postcode";
       const propertyVal = document.getElementById("qb-property").value;
       const surveyVal = document.getElementById("qb-survey").value;
-      const notesVal = (document.getElementById("qb-notes").value || "").trim();
+      const rawNotes = (document.getElementById("qb-notes").value || "").trim();
+      const notesVal = stripHTMLTags(rawNotes).slice(0, 500);
 
       const enquiry = {
         id: quoteState.refId,
@@ -1580,9 +1615,18 @@
         status: "New Enquiry"
       };
 
-      const existing = loadEnquiries();
-      existing.unshift(enquiry);
-      localStorage.setItem(STORAGE_KEYS.ENQUIRIES, JSON.stringify(existing));
+      try {
+        const resp = await fetch(`${API_BASE}/api/enquiries`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(enquiry)
+        });
+        if (!resp.ok) {
+          console.warn("Server rejected enquiry submission");
+        }
+      } catch (e) {
+        showToast("Could not reach server — check your connection");
+      }
 
       // Generate fresh ref ID for next quote
       quoteState.refId = "OM-" + Math.floor(1000 + Math.random() * 9000);
@@ -1590,23 +1634,33 @@
       return enquiry;
     }
 
-    function submitQuoteViaWhatsApp() {
-      const saved = persistCurrentEnquiry();
+    async function submitQuoteViaWhatsApp() {
+      const saved = await persistCurrentEnquiry();
       const message = buildFormattedQuoteText();
       const phone = (activeBrand.whatsappNumber || "447700900412").replace(/\D/g, "");
       const waUrl = `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
 
-      showToast(`Quote #${saved.id} saved to Workshop Desk & opening WhatsApp...`);
+      showToast(`Quote #${saved.id} logged & opening WhatsApp...`);
       window.open(waUrl, "_blank", "noopener");
     }
 
-    function saveEnquiryOnly() {
-      const saved = persistCurrentEnquiry();
+    async function saveEnquiryOnly() {
+      const saved = await persistCurrentEnquiry();
       showToast(`Survey request #${saved.id} logged in Owner Desk!`);
     }
 
-    function copyQuoteSlip() {
+    async function copyQuoteSlip() {
       const text = buildFormattedQuoteText();
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        try {
+          await navigator.clipboard.writeText(text);
+          showToast("Quote slip copied to clipboard!");
+          return;
+        } catch (err) {
+          // Fall through to legacy fallback
+        }
+      }
+      // Legacy fallback
       const tempArea = document.createElement("textarea");
       tempArea.value = text;
       tempArea.style.position = "fixed";
@@ -1627,56 +1681,22 @@
      * 7. PIN-PROTECTED OWNER DESK & 1-CLICK BRAND CLONER
      * =========================================================================
      */
-    let enteredPin = "";
-    let ownerUnlocked = false;
 
-    function loadEnquiries() {
+    async function loadEnquiries() {
       try {
-        const raw = localStorage.getItem(STORAGE_KEYS.ENQUIRIES);
-        if (raw) return JSON.parse(raw);
-      } catch (e) {}
+        const resp = await fetch(`${API_BASE}/api/enquiries`, { headers: authHeaders() });
+        if (resp.status === 401) { handleUnauthorized(); return []; }
+        if (resp.ok) return await resp.json();
+      } catch (e) {
+        showToast("Could not reach server — check your connection");
+      }
       return [];
     }
 
     function seedDemoEnquiries(force = false) {
-      const existing = loadEnquiries();
-      if (existing.length > 0 && !force) return;
-
-      const samples = [
-        {
-          id: "OM-7412",
-          createdAt: "Today",
-          name: "Eleanor Vance",
-          postcode: "SE22 8BA",
-          property: "Period / Victorian / Edwardian",
-          survey: "Saturday Morning / Afternoon",
-          project: "Fitted Wardrobes (Hinged / Sliding / Walk-In)",
-          width: "2.5m – 4.0m",
-          finish: "Workshop Spray Finish (Any Colour)",
-          estimate: "£3,050 – £3,750",
-          notes: "Master bedroom chimney breast + two alcoves, floor-to-ceiling shaker doors in Farrow & Ball Shaded White.",
-          status: "New Enquiry"
-        },
-        {
-          id: "OM-7389",
-          createdAt: "Yesterday",
-          name: "David & Hannah Patel",
-          postcode: "KT2 6PY",
-          property: "1930s–1980s Suburban",
-          survey: "Weekday Evening (5pm–7:30pm)",
-          project: "Acoustic Slatted Media Wall",
-          width: "2.5m – 4.0m",
-          finish: "Fluted / Slatted Wood + LED Lighting",
-          estimate: "£4,150 – £5,150",
-          notes: "65-inch OLED recess + 1.5m electric fire + floating oak drawer unit.",
-          status: "Site Measure Booked"
-        }
-      ];
-
-      localStorage.setItem(STORAGE_KEYS.ENQUIRIES, JSON.stringify(samples));
-      if (ownerUnlocked) {
-        renderOwnerEnquiries();
-        showToast("Sample UK carpentry leads restored.");
+      // Seed data is managed by the backend; this function is intentionally disabled
+      if (force) {
+        showToast("Sample leads are managed by the backend server.");
       }
     }
 
@@ -1700,10 +1720,13 @@
       const modal = document.getElementById("owner-modal");
       modal.classList.add("hidden");
       modal.classList.remove("flex");
+      sessionStorage.removeItem("om_owner_token");
+      ownerUnlocked = false;
     }
 
     function lockOwnerDesk() {
       ownerUnlocked = false;
+      sessionStorage.removeItem("om_owner_token");
       enteredPin = "";
       updatePinDots();
       document.getElementById("owner-pin-screen").classList.remove("hidden");
@@ -1736,25 +1759,38 @@
       });
     }
 
-    function submitPin() {
-      if (enteredPin === OWNER_PIN) {
-        ownerUnlocked = true;
-        showUnlockedDashboard();
-      } else {
-        document.getElementById("pin-error").classList.remove("hidden");
+    async function submitPin() {
+      try {
+        const resp = await fetch(`${API_BASE}/api/auth/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pin: enteredPin })
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          sessionStorage.setItem("om_owner_token", data.token);
+          ownerUnlocked = true;
+          showUnlockedDashboard();
+        } else {
+          document.getElementById("pin-error").classList.remove("hidden");
+          enteredPin = "";
+          updatePinDots();
+        }
+      } catch (e) {
+        showToast("Could not reach server — check your connection");
         enteredPin = "";
         updatePinDots();
       }
     }
 
-    function showUnlockedDashboard() {
+    async function showUnlockedDashboard() {
       document.getElementById("owner-pin-screen").classList.add("hidden");
       document.getElementById("owner-dashboard").classList.remove("hidden");
-      renderOwnerEnquiries();
+      await renderOwnerEnquiries();
       populateBrandClonerForm();
     }
 
-    function switchOwnerTab(tabName) {
+    async function switchOwnerTab(tabName) {
       const tabEnq = document.getElementById("owner-tab-enquiries");
       const tabCloner = document.getElementById("owner-tab-cloner");
       const btnEnq = document.getElementById("owner-tab-btn-enquiries");
@@ -1765,7 +1801,7 @@
         tabCloner.classList.add("hidden");
         btnEnq.className = "px-4 py-3.5 text-xs sm:text-sm font-bold border-b-2 border-brand-dark text-brand-dark";
         btnCloner.className = "px-4 py-3.5 text-xs sm:text-sm font-bold border-b-2 border-transparent text-black/55 hover:text-brand-dark";
-        renderOwnerEnquiries();
+        await renderOwnerEnquiries();
       } else {
         tabEnq.classList.add("hidden");
         tabCloner.classList.remove("hidden");
@@ -1775,8 +1811,8 @@
       }
     }
 
-    function renderOwnerEnquiries() {
-      const enquiries = loadEnquiries();
+    async function renderOwnerEnquiries() {
+      const enquiries = await loadEnquiries();
       document.getElementById("enquiry-count-badge").textContent = enquiries.length;
       const list = document.getElementById("owner-enquiries-list");
 
@@ -1785,11 +1821,18 @@
         return;
       }
 
-      const statuses = ["New Enquiry", "Site Measure Booked", "Quoted", "Won"];
+      const ALLOWED_STATUSES = ["New Enquiry", "Site Measure Booked", "Quoted", "Won"];
 
       list.innerHTML = enquiries.map((item, idx) => {
+        // Validate WhatsApp number is digits only before building URL
+        const waNumber = (activeBrand.whatsappNumber || "447700900412").replace(/\D/g, "");
         const followUpMsg = `Hi ${item.name}, thanks for your bespoke joinery enquiry (#${item.id}) for ${item.project} in ${item.postcode}. Our guide estimate is ${item.estimate}. Would you like to book your laser measure survey for ${item.survey}? — ${activeBrand.companyName}`;
-        const waFollowUp = `https://wa.me/${(activeBrand.whatsappNumber || "447700900412").replace(/\D/g, "")}?text=${encodeURIComponent(followUpMsg)}`;
+        const waFollowUp = /^\d+$/.test(waNumber)
+          ? `https://wa.me/${waNumber}?text=${encodeURIComponent(followUpMsg)}`
+          : "#";
+
+        // Validate status against allowlist
+        const safeStatus = ALLOWED_STATUSES.includes(item.status) ? item.status : "New Enquiry";
 
         return `
           <div class="p-4 rounded-xl border border-black/12 bg-brand-surface/40 space-y-3">
@@ -1813,15 +1856,15 @@
             <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-black/8">
               <div class="flex items-center gap-2">
                 <label class="text-[11px] font-semibold text-black/60">Status:</label>
-                <select onchange="updateEnquiryStatus(${idx}, this.value)" class="px-2.5 py-1.5 rounded-lg border border-black/15 bg-white text-xs font-semibold text-brand-dark">
-                  ${statuses.map((st) => `<option value="${st}" ${item.status === st ? "selected" : ""}>${st}</option>`).join("")}
+                <select onchange="updateEnquiryStatus('${escapeHTML(item.id)}', this.value)" class="px-2.5 py-1.5 rounded-lg border border-black/15 bg-white text-xs font-semibold text-brand-dark">
+                  ${ALLOWED_STATUSES.map((st) => `<option value="${escapeHTML(st)}" ${safeStatus === st ? "selected" : ""}>${escapeHTML(st)}</option>`).join("")}
                 </select>
               </div>
               <div class="flex items-center gap-2">
-                <a href="${waFollowUp}" target="_blank" rel="noopener" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-dark text-white text-xs font-semibold hover:opacity-90 transition">
+                <a href="${escapeHTML(waFollowUp)}" target="_blank" rel="noopener" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-dark text-white text-xs font-semibold hover:opacity-90 transition">
                   <span>WhatsApp Follow-Up</span>
                 </a>
-                <button type="button" onclick="deleteEnquiry(${idx})" class="px-2.5 py-1.5 rounded-lg border border-black/12 text-xs text-black/55 hover:text-red-600 hover:border-red-300 transition">
+                <button type="button" onclick="deleteEnquiry('${escapeHTML(item.id)}')" class="px-2.5 py-1.5 rounded-lg border border-black/12 text-xs text-black/55 hover:text-red-600 hover:border-red-300 transition">
                   Remove
                 </button>
               </div>
@@ -1831,21 +1874,38 @@
       }).join("");
     }
 
-    function updateEnquiryStatus(index, newStatus) {
-      const list = loadEnquiries();
-      if (list[index]) {
-        list[index].status = newStatus;
-        localStorage.setItem(STORAGE_KEYS.ENQUIRIES, JSON.stringify(list));
-        showToast(`Updated #${list[index].id} to "${newStatus}"`);
+    async function updateEnquiryStatus(id, newStatus) {
+      const ALLOWED_STATUSES = ["New Enquiry", "Site Measure Booked", "Quoted", "Won"];
+      if (!ALLOWED_STATUSES.includes(newStatus)) return;
+      try {
+        const resp = await fetch(`${API_BASE}/api/enquiries/${encodeURIComponent(id)}/status`, {
+          method: "PATCH",
+          headers: authHeaders(),
+          body: JSON.stringify({ status: newStatus })
+        });
+        if (resp.status === 401) { handleUnauthorized(); return; }
+        if (resp.ok) {
+          showToast(`Updated #${id} to "${newStatus}"`);
+        }
+      } catch (e) {
+        showToast("Could not reach server — check your connection");
       }
     }
 
-    function deleteEnquiry(index) {
-      const list = loadEnquiries();
-      list.splice(index, 1);
-      localStorage.setItem(STORAGE_KEYS.ENQUIRIES, JSON.stringify(list));
-      renderOwnerEnquiries();
-      showToast("Enquiry removed.");
+    async function deleteEnquiry(id) {
+      try {
+        const resp = await fetch(`${API_BASE}/api/enquiries/${encodeURIComponent(id)}`, {
+          method: "DELETE",
+          headers: authHeaders()
+        });
+        if (resp.status === 401) { handleUnauthorized(); return; }
+        if (resp.ok) {
+          renderOwnerEnquiries();
+          showToast("Enquiry removed.");
+        }
+      } catch (e) {
+        showToast("Could not reach server — check your connection");
+      }
     }
 
     /* Quick-Brand Customizer (Clone Mode) */
@@ -1882,7 +1942,7 @@
       document.documentElement.style.setProperty("--accent-gold", hex);
     }
 
-    function saveBrandCustomizations() {
+    async function saveBrandCustomizations() {
       const updated = {
         ...activeBrand,
         companyName: document.getElementById("cfg-companyName").value.trim() || DEFAULT_BRAND_CONFIG.companyName,
@@ -1898,13 +1958,37 @@
         brandStoryBody: document.getElementById("cfg-brandStoryBody").value.trim() || DEFAULT_BRAND_CONFIG.brandStoryBody
       };
 
-      localStorage.setItem(STORAGE_KEYS.BRAND, JSON.stringify(updated));
+      try {
+        const resp = await fetch(`${API_BASE}/api/brand`, {
+          method: "PUT",
+          headers: authHeaders(),
+          body: JSON.stringify(updated)
+        });
+        if (resp.status === 401) { handleUnauthorized(); return; }
+        if (!resp.ok) {
+          showToast("Could not reach server — check your connection");
+          return;
+        }
+      } catch (e) {
+        showToast("Could not reach server — check your connection");
+        return;
+      }
+
       applyBrandConfig(updated);
       showToast(`Brand updated to "${updated.companyName}"!`);
     }
 
-    function resetBrandConfig() {
-      localStorage.removeItem(STORAGE_KEYS.BRAND);
+    async function resetBrandConfig() {
+      try {
+        const resp = await fetch(`${API_BASE}/api/brand`, {
+          method: "PUT",
+          headers: authHeaders(),
+          body: JSON.stringify(DEFAULT_BRAND_CONFIG)
+        });
+        if (resp.status === 401) { handleUnauthorized(); return; }
+      } catch (e) {
+        // Silently continue — apply locally at minimum
+      }
       applyBrandConfig({ ...DEFAULT_BRAND_CONFIG });
       populateBrandClonerForm();
       showToast("Reset to Oak & Mortise default brand.");
@@ -1922,6 +2006,44 @@
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#39;");
+    }
+
+    function stripHTMLTags(str) {
+      return String(str || "").replace(/<[^>]*>/g, "");
+    }
+
+    const UK_POSTCODE_REGEX = /^[A-Z]{1,2}[0-9][0-9A-Z]?\s?[0-9][A-Z]{2}$/i;
+
+    function validatePostcode(postcode) {
+      return UK_POSTCODE_REGEX.test(postcode.trim());
+    }
+
+    // Enhance postcode field with inline validation
+    function setupPostcodeValidation() {
+      const field = document.getElementById("qb-postcode");
+      if (!field) return;
+      let errorEl = document.getElementById("qb-postcode-error");
+      if (!errorEl) {
+        errorEl = document.createElement("div");
+        errorEl.id = "qb-postcode-error";
+        errorEl.className = "text-xs font-semibold text-red-600 mt-1 hidden";
+        errorEl.textContent = "Please enter a valid UK postcode (e.g. SE9 4AB)";
+        field.parentNode.appendChild(errorEl);
+      }
+      field.addEventListener("blur", () => {
+        const val = field.value.trim();
+        if (val && !validatePostcode(val)) {
+          errorEl.classList.remove("hidden");
+          field.classList.add("border-red-400");
+        } else {
+          errorEl.classList.add("hidden");
+          field.classList.remove("border-red-400");
+        }
+      });
+      field.addEventListener("input", () => {
+        errorEl.classList.add("hidden");
+        field.classList.remove("border-red-400");
+      });
     }
 
     function showToast(message) {
@@ -1950,15 +2072,17 @@
       }
     });
 
-    window.addEventListener("DOMContentLoaded", () => {
+    window.addEventListener("DOMContentLoaded", async () => {
       document.getElementById("current-year").textContent = new Date().getFullYear();
-      seedDemoEnquiries(false);
+      // Seed data is managed by the backend; auto-seeding is disabled
+      activeBrand = await loadBrandConfig();
       applyBrandConfig(activeBrand);
       selectHeroShowcase(0);
       renderPortfolioFilters();
       renderPortfolioGrid();
       renderQuoteBuilderOptions();
       updateQuoteState();
+      setupPostcodeValidation();
     });
   </script>
 </body>
