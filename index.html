@@ -754,6 +754,12 @@
             <input id="cfg-serviceAreas" type="text" class="w-full px-3 py-2 rounded-lg border border-black/15 text-sm" />
           </div>
 
+          <div class="p-3.5 bg-black/[0.03] rounded-xl border border-black/10">
+            <label class="block text-xs font-bold text-brand-dark mb-1">Backend API Base URL (Dynamic)</label>
+            <p class="text-[11px] text-black/55 mb-2">Leave blank to auto-detect (<code class="font-mono">http://localhost:3001</code> on local, or relative/offline fallback). When deploying a backend on Render, Railway, or VPS, paste the URL here (e.g. <code class="font-mono">https://my-api.onrender.com</code>).</p>
+            <input id="cfg-apiBase" type="url" placeholder="Auto-detected (or e.g. https://api.mysite.com)" class="w-full px-3 py-2 rounded-lg border border-black/15 text-sm font-mono bg-white" />
+          </div>
+
           <!-- Accent Colour Swatches + Custom Picker -->
           <div>
             <label class="block text-xs font-bold text-black/75 mb-2">Brand Accent Colour</label>
@@ -864,12 +870,30 @@
           rating: 5,
           text: "Doubled our hallway storage overnight. Soft-close Blum runners feel rock solid."
         }
-      ]
+      ],
+      apiBase: "" // Custom backend API URL (optional override)
     };
 
-    const API_BASE = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
-      ? "http://localhost:3001"
-      : ""; // On Vercel or production, use relative /api paths or client fallback
+    /**
+     * DYNAMIC API BASE URL MANAGEMENT
+     * Resolves API base in priority order:
+     * 1. Window runtime config: window.APP_CONFIG?.apiBase
+     * 2. Saved brand config: activeBrand.apiBase
+     * 3. Localhost development: http://localhost:3001
+     * 4. Production default: "" (relative /api paths or client fallback)
+     */
+    function getApiBase() {
+      if (typeof window !== "undefined" && window.APP_CONFIG && window.APP_CONFIG.apiBase) {
+        return window.APP_CONFIG.apiBase.replace(/\/+$/, "");
+      }
+      if (activeBrand && activeBrand.apiBase && typeof activeBrand.apiBase === "string" && activeBrand.apiBase.trim()) {
+        return activeBrand.apiBase.trim().replace(/\/+$/, "");
+      }
+      if (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
+        return "http://localhost:3001";
+      }
+      return "";
+    }
 
     const LOCAL_KEYS = {
       BRAND: "om_brand_config_v1",
@@ -1207,9 +1231,10 @@
      * =========================================================================
      */
     async function loadBrandConfig() {
-      if (API_BASE) {
+      const apiBase = getApiBase();
+      if (apiBase) {
         try {
-          const resp = await fetch(`${API_BASE}/api/brand`);
+          const resp = await fetch(`${apiBase}/api/brand`);
           if (resp.ok) {
             const data = await resp.json();
             return { ...DEFAULT_BRAND_CONFIG, ...(data.brand || data) };
@@ -1632,9 +1657,10 @@
       };
 
       let savedToServer = false;
-      if (API_BASE) {
+      const apiBase = getApiBase();
+      if (apiBase) {
         try {
-          const resp = await fetch(`${API_BASE}/api/enquiries`, {
+          const resp = await fetch(`${apiBase}/api/enquiries`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(enquiry)
@@ -1708,9 +1734,10 @@
      */
 
     async function loadEnquiries() {
-      if (API_BASE) {
+      const apiBase = getApiBase();
+      if (apiBase) {
         try {
-          const resp = await fetch(`${API_BASE}/api/enquiries`, { headers: authHeaders() });
+          const resp = await fetch(`${apiBase}/api/enquiries`, { headers: authHeaders() });
           if (resp.status === 401) { handleUnauthorized(); return []; }
           if (resp.ok) {
             const data = await resp.json();
@@ -1795,11 +1822,12 @@
 
     async function submitPin() {
       let loggedIn = false;
+      const apiBase = getApiBase();
 
-      // 1. Try server auth if API_BASE is reachable
-      if (API_BASE) {
+      // 1. Try server auth if API base is reachable
+      if (apiBase) {
         try {
-          const resp = await fetch(`${API_BASE}/api/auth/login`, {
+          const resp = await fetch(`${apiBase}/api/auth/login`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ pin: enteredPin })
@@ -1925,9 +1953,10 @@
       const ALLOWED_STATUSES = ["New Enquiry", "Site Measure Booked", "Quoted", "Won"];
       if (!ALLOWED_STATUSES.includes(newStatus)) return;
 
-      if (API_BASE) {
+      const apiBase = getApiBase();
+      if (apiBase) {
         try {
-          const resp = await fetch(`${API_BASE}/api/enquiries/${encodeURIComponent(id)}/status`, {
+          const resp = await fetch(`${apiBase}/api/enquiries/${encodeURIComponent(id)}/status`, {
             method: "PATCH",
             headers: authHeaders(),
             body: JSON.stringify({ status: newStatus })
@@ -1952,9 +1981,10 @@
     }
 
     async function deleteEnquiry(id) {
-      if (API_BASE) {
+      const apiBase = getApiBase();
+      if (apiBase) {
         try {
-          const resp = await fetch(`${API_BASE}/api/enquiries/${encodeURIComponent(id)}`, {
+          const resp = await fetch(`${apiBase}/api/enquiries/${encodeURIComponent(id)}`, {
             method: "DELETE",
             headers: authHeaders()
           });
@@ -1985,6 +2015,7 @@
       document.getElementById("cfg-logoUrl").value = activeBrand.logoUrl || "";
       document.getElementById("cfg-email").value = activeBrand.email || "";
       document.getElementById("cfg-serviceAreas").value = activeBrand.serviceAreas || "";
+      document.getElementById("cfg-apiBase").value = activeBrand.apiBase || "";
       document.getElementById("cfg-accentGold").value = activeBrand.accentGold || "#C69C6D";
       document.getElementById("cfg-brandStoryTitle").value = activeBrand.brandStoryTitle || "";
       document.getElementById("cfg-brandStoryBody").value = activeBrand.brandStoryBody || "";
@@ -2020,14 +2051,16 @@
         logoUrl: document.getElementById("cfg-logoUrl").value.trim(),
         email: document.getElementById("cfg-email").value.trim() || DEFAULT_BRAND_CONFIG.email,
         serviceAreas: document.getElementById("cfg-serviceAreas").value.trim() || DEFAULT_BRAND_CONFIG.serviceAreas,
+        apiBase: document.getElementById("cfg-apiBase").value.trim().replace(/\/+$/, ""),
         accentGold: document.getElementById("cfg-accentGold").value || DEFAULT_BRAND_CONFIG.accentGold,
         brandStoryTitle: document.getElementById("cfg-brandStoryTitle").value.trim() || DEFAULT_BRAND_CONFIG.brandStoryTitle,
         brandStoryBody: document.getElementById("cfg-brandStoryBody").value.trim() || DEFAULT_BRAND_CONFIG.brandStoryBody
       };
 
-      if (API_BASE) {
+      const apiBase = getApiBase();
+      if (apiBase) {
         try {
-          const resp = await fetch(`${API_BASE}/api/brand`, {
+          const resp = await fetch(`${apiBase}/api/brand`, {
             method: "PUT",
             headers: authHeaders(),
             body: JSON.stringify(updated)
@@ -2046,9 +2079,10 @@
     }
 
     async function resetBrandConfig() {
-      if (API_BASE) {
+      const apiBase = getApiBase();
+      if (apiBase) {
         try {
-          const resp = await fetch(`${API_BASE}/api/brand`, {
+          const resp = await fetch(`${apiBase}/api/brand`, {
             method: "PUT",
             headers: authHeaders(),
             body: JSON.stringify(DEFAULT_BRAND_CONFIG)
